@@ -39,6 +39,7 @@ func Init(e *gin.Engine) {
 
 	api := g.Group("/api")
 	auth := api.Group("", middlewares.Auth)
+	api.GET("/auth/telegram", handles.TelegramLogin)
 
 	api.POST("/auth/login", handles.Login)
 	auth.GET("/me", handles.CurrentUser)
