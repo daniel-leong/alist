@@ -12,7 +12,19 @@ import (
 	"github.com/alist-org/alist/v3/server/common"
 	"github.com/gin-gonic/gin"
 	"github.com/pquerna/otp/totp"
+	
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/url"
+	"sort"
+    	"strings"
+    	"os"
+
 )
+
+var telegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN") // Set this in your environment
+
 
 var loginCache = cache.NewMemCache[int]()
 var (
@@ -164,4 +176,72 @@ func Verify2FA(c *gin.Context) {
 	} else {
 		common.SuccessResp(c)
 	}
+}
+
+// Helper function to verify Telegram data
+func verifyTelegramAuth(data url.Values) bool {
+    hash := data.Get("hash")
+    data.Del("hash")
+
+    var keys []string
+    for k := range data {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+
+    var dataStrings []string
+    for _, k := range keys {
+        dataStrings = append(dataStrings, k+"="+data.Get(k))
+    }
+    dataCheckString := strings.Join(dataStrings, "\n")
+
+    secretKey := sha256.Sum256([]byte(telegramBotToken))
+    h := hmac.New(sha256.New, secretKey[:])
+    h.Write([]byte(dataCheckString))
+    calculatedHash := hex.EncodeToString(h.Sum(nil))
+
+    return calculatedHash == hash
+}
+
+// Handler for Telegram login
+func TelegramLogin(c *gin.Context) {
+    params := c.Request.URL.Query()
+
+    if !verifyTelegramAuth(params) {
+        common.ErrorStrResp(c, "Invalid Telegram login", 400)
+        return
+    }
+
+    telegramID := params.Get("id")
+    username := params.Get("username")
+    if telegramID == "" || username == "" {
+        common.ErrorStrResp(c, "Missing Telegram data", 400)
+        return
+    }
+
+    // Try to fetch user by username, or by SsoID if your user model supports it
+    user, err := op.GetUserByName(username)
+    if err != nil {
+        // User not found, create new user
+        user = &model.User{
+            Username: username,
+            Password: "", // No password required
+            SsoID:    telegramID,
+        }
+        if err := op.CreateUser(user); err != nil {
+            common.ErrorResp(c, err, 500)
+            return
+        }
+    }
+
+    // Generate token
+    token, err := common.GenerateToken(user.Username)
+    if err != nil {
+        common.ErrorResp(c, err, 500)
+        return
+    }
+
+    // Set cookie for 1 week
+    c.SetCookie("token", token, 7*24*3600, "/", "", false, true)
+    common.SuccessResp(c, gin.H{"token": token, "username": user.Username})
 }
